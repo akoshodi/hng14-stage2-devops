@@ -136,32 +136,31 @@ jobs:
           docker build -t scan/worker:latest ./worker
           docker build -t scan/frontend:latest ./frontend
 
-      - name: Scan api
+      # Generate SARIF reports (exit-code 0 — SARIF format ignores severity
+      # filter for exit code, so we separate reporting from gating)
+      - name: Generate SARIF — api
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: scan/api:latest
           format: sarif
           output: trivy-api.sarif
-          severity: CRITICAL
-          exit-code: "1"
+          exit-code: "0"
 
-      - name: Scan worker
+      - name: Generate SARIF — worker
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: scan/worker:latest
           format: sarif
           output: trivy-worker.sarif
-          severity: CRITICAL
-          exit-code: "1"
+          exit-code: "0"
 
-      - name: Scan frontend
+      - name: Generate SARIF — frontend
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: scan/frontend:latest
           format: sarif
           output: trivy-frontend.sarif
-          severity: CRITICAL
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Upload SARIF
         uses: actions/upload-artifact@v4
@@ -169,6 +168,31 @@ jobs:
         with:
           name: trivy-results
           path: "*.sarif"
+
+      # Gate: fail pipeline on any CRITICAL finding
+      - name: Gate — fail on CRITICAL (api)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: scan/api:latest
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+
+      - name: Gate — fail on CRITICAL (worker)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: scan/worker:latest
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+
+      - name: Gate — fail on CRITICAL (frontend)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: scan/frontend:latest
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
 
   integration:
     name: Integration Test
