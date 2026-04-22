@@ -12,5 +12,5 @@ COPY --from=builder /install /usr/local
 COPY worker.py .
 USER appuser
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD pgrep -f "python worker.py" > /dev/null || exit 1
+  CMD python -c "import os, sys; sys.exit(0) if os.path.exists('/proc/1/status') else sys.exit(1)"
 CMD ["python", "worker.py"]
