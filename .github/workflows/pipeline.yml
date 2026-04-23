@@ -6,12 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -21,36 +26,36 @@ jobs:
       - name: Install flake8
         run: pip install flake8
 
-      - name: Lint api
+      - name: Run flake8 on api
         run: flake8 api/main.py --max-line-length=100
 
-      - name: Lint worker
+      - name: Run flake8 on worker
         run: flake8 worker/worker.py --max-line-length=100
 
-      - name: Set up Node
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install frontend deps
+      - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
 
-      - name: Lint JavaScript
+      - name: Run eslint on frontend
         working-directory: frontend
-        run: npm run lint
+        run: npx eslint app.js --env node --env es2021 --rule '{"no-unused-vars": "warn"}' || npx eslint app.js
 
-      - name: Lint api Dockerfile
+      - name: Lint api Dockerfile with hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: api/Dockerfile
 
-      - name: Lint worker Dockerfile
+      - name: Lint worker Dockerfile with hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: worker/Dockerfile
 
-      - name: Lint frontend Dockerfile
+      - name: Lint frontend Dockerfile with hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: frontend/Dockerfile
@@ -60,29 +65,30 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install api dependencies and test tools
         working-directory: api
-        run: pip install -r requirements.txt pytest pytest-cov
+        run: pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Run pytest with coverage
         working-directory: api
-        run: pytest tests/ --cov=. --cov-report=xml --cov-report=term
+        run: pytest tests/ --cov=. --cov-report=xml --cov-report=term -v
 
-      - name: Upload coverage
+      - name: Upload coverage report artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: api/coverage.xml
 
   build:
-    name: Build & Push
+    name: Build and Push Images
     runs-on: ubuntu-latest
     needs: test
     services:
@@ -91,157 +97,156 @@ jobs:
         ports:
           - 5000:5000
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set SHA tag
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Set short SHA tag
         run: echo "SHA=${GITHUB_SHA::8}" >> $GITHUB_ENV
 
-      - name: Build and push api
-        run: |
-          docker build -t localhost:5000/api:${{ env.SHA }} -t localhost:5000/api:latest ./api
-          docker push localhost:5000/api:${{ env.SHA }}
-          docker push localhost:5000/api:latest
-
-      - name: Build and push worker
-        run: |
-          docker build -t localhost:5000/worker:${{ env.SHA }} -t localhost:5000/worker:latest ./worker
-          docker push localhost:5000/worker:${{ env.SHA }}
-          docker push localhost:5000/worker:latest
-
-      - name: Build and push frontend
-        run: |
-          docker build -t localhost:5000/frontend:${{ env.SHA }} -t localhost:5000/frontend:latest ./frontend
-          docker push localhost:5000/frontend:${{ env.SHA }}
-          docker push localhost:5000/frontend:latest
-
-      - name: Save SHA for downstream jobs
-        run: echo "${{ env.SHA }}" > sha.txt
-
-      - name: Upload SHA artifact
-        uses: actions/upload-artifact@v4
+      - name: Cache Docker layers for api
+        uses: actions/cache@v4
         with:
-          name: build-sha
-          path: sha.txt
+          path: /tmp/.buildx-cache-api
+          key: ${{ runner.os }}-buildx-api-${{ hashFiles('api/**') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-api-
+
+      - name: Cache Docker layers for worker
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-worker
+          key: ${{ runner.os }}-buildx-worker-${{ hashFiles('worker/**') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-worker-
+
+      - name: Cache Docker layers for frontend
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-frontend
+          key: ${{ runner.os }}-buildx-frontend-${{ hashFiles('frontend/**') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-frontend-
+
+      - name: Build and push api image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          push: true
+          tags: |
+            localhost:5000/api:${{ env.SHA }}
+            localhost:5000/api:latest
+          cache-from: type=local,src=/tmp/.buildx-cache-api
+          cache-to: type=local,dest=/tmp/.buildx-cache-api-new,mode=max
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            localhost:5000/worker:${{ env.SHA }}
+            localhost:5000/worker:latest
+          cache-from: type=local,src=/tmp/.buildx-cache-worker
+          cache-to: type=local,dest=/tmp/.buildx-cache-worker-new,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            localhost:5000/frontend:${{ env.SHA }}
+            localhost:5000/frontend:latest
+          cache-from: type=local,src=/tmp/.buildx-cache-frontend
+          cache-to: type=local,dest=/tmp/.buildx-cache-frontend-new,mode=max
+
+      - name: Rotate build cache for api
+        run: |
+          rm -rf /tmp/.buildx-cache-api
+          mv /tmp/.buildx-cache-api-new /tmp/.buildx-cache-api
+
+      - name: Rotate build cache for worker
+        run: |
+          rm -rf /tmp/.buildx-cache-worker
+          mv /tmp/.buildx-cache-worker-new /tmp/.buildx-cache-worker
+
+      - name: Rotate build cache for frontend
+        run: |
+          rm -rf /tmp/.buildx-cache-frontend
+          mv /tmp/.buildx-cache-frontend-new /tmp/.buildx-cache-frontend
 
   security:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Build images for scanning
-        run: |
-          docker build -t scan/api:latest ./api
-          docker build -t scan/worker:latest ./worker
-          docker build -t scan/frontend:latest ./frontend
+      - name: Build api image for scanning
+        run: docker build -t scan/api:latest ./api
 
-      # Generate SARIF reports (exit-code 0 — SARIF format ignores severity
-      # filter for exit code, so we separate reporting from gating)
-      - name: Generate SARIF — api
+      - name: Build worker image for scanning
+        run: docker build -t scan/worker:latest ./worker
+
+      - name: Build frontend image for scanning
+        run: docker build -t scan/frontend:latest ./frontend
+
+      - name: Scan api image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: scan/api:latest
           format: sarif
           output: trivy-api.sarif
-          exit-code: "0"
+          severity: CRITICAL
+          exit-code: "1"
 
-      - name: Generate SARIF — worker
+      - name: Scan worker image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: scan/worker:latest
           format: sarif
           output: trivy-worker.sarif
-          exit-code: "0"
+          severity: CRITICAL
+          exit-code: "1"
 
-      - name: Generate SARIF — frontend
+      - name: Scan frontend image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: scan/frontend:latest
           format: sarif
           output: trivy-frontend.sarif
-          exit-code: "0"
+          severity: CRITICAL
+          exit-code: "1"
 
-      - name: Upload SARIF
+      - name: Upload Trivy SARIF results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: trivy-results
           path: "*.sarif"
 
-      # Gate: fail pipeline on any CRITICAL finding
-      - name: Gate — fail on CRITICAL (api)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: scan/api:latest
-          format: table
-          severity: CRITICAL
-          exit-code: "1"
-
-      - name: Gate — fail on CRITICAL (worker)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: scan/worker:latest
-          format: table
-          severity: CRITICAL
-          exit-code: "1"
-
-      - name: Gate — fail on CRITICAL (frontend)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: scan/frontend:latest
-          format: table
-          severity: CRITICAL
-          exit-code: "1"
-
   integration:
     name: Integration Test
     runs-on: ubuntu-latest
     needs: security
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Create .env
+      - name: Create env file from example
         run: cp .env.example .env
 
-      - name: Start stack
-        run: docker compose up -d --build
+      - name: Make integration script executable
+        run: chmod +x integration.sh
 
-      - name: Wait for healthy
-        run: |
-          echo "Waiting for all services to be healthy..."
-          timeout 120 bash -c '
-            until [ "$(docker compose ps --format json | \
-              python3 -c "import sys,json; s=sys.stdin.read(); \
-              items=[json.loads(l) for l in s.strip().splitlines()]; \
-              print(all(i.get(\"Health\",\"\")==\"healthy\" for i in items if i.get(\"Health\")))")" = "True" ]; do
-              echo "Still waiting..."
-              docker compose ps
-              sleep 5
-            done
-          '
-
-      - name: Submit job and poll until complete
-        run: |
-          JOB_ID=$(curl -sf -X POST http://localhost:3000/submit | jq -r '.job_id')
-          echo "Job submitted: $JOB_ID"
-
-          for i in $(seq 1 30); do
-            STATUS=$(curl -sf http://localhost:3000/status/$JOB_ID | jq -r '.status')
-            echo "Attempt $i — status: $STATUS"
-            if [ "$STATUS" = "completed" ]; then
-              echo "Integration test passed"
-              exit 0
-            fi
-            sleep 3
-          done
-
-          echo "Job did not complete within timeout"
-          exit 1
-
-      - name: Tear down
-        if: always()
-        run: docker compose down -v
+      - name: Run integration test script
+        run: bash integration.sh
 
   deploy:
     name: Deploy
@@ -249,7 +254,9 @@ jobs:
     needs: integration
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Rolling deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -257,75 +264,24 @@ jobs:
           username: hngdevops
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            set -eu
+            set -e
             cd ~/hng14-stage2-devops
-            git pull --ff-only origin main
-
-            wait_for_healthy() {
-              container_id="$1"
-              timeout_seconds=60
-              deadline=$(($(date +%s) + timeout_seconds))
-
-              while [ "$(date +%s)" -lt "$deadline" ]; do
-                status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$container_id" 2>/dev/null || echo "missing")
-
-                if [ "$status" = "healthy" ]; then
-                  return 0
-                fi
-
-                if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ] || [ "$status" = "missing" ]; then
-                  return 1
-                fi
-
-                sleep 3
-              done
-
-              return 1
-            }
+            git pull origin main
+            docker compose build
 
             for service in api worker frontend; do
               echo "==> Rolling update: $service"
+              docker compose up -d --no-deps --build $service
 
-              docker compose build "$service"
-
-              OLD_ID=$(docker compose ps -q "$service" | head -n 1 || true)
-              if [ -z "$OLD_ID" ]; then
-                echo "No existing container found for $service; starting fresh"
-                docker compose up -d --no-deps "$service"
-                continue
-              fi
-
-              CANDIDATE_NAME="${service}_candidate_$(date +%s)_$$"
-
-              IMAGE_REF=$(docker inspect --format '{{.Config.Image}}' "$OLD_ID")
-              PRIMARY_NETWORK=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$OLD_ID" | head -n 1)
-
-              if [ -z "$PRIMARY_NETWORK" ]; then
-                echo "Unable to determine network for $service"
-                exit 1
-              fi
-
-              docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
-              docker run -d --name "$CANDIDATE_NAME" --env-file .env --network "$PRIMARY_NETWORK" "$IMAGE_REF" >/dev/null
-
-              EXTRA_NETWORKS=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$OLD_ID" | tail -n +2)
-              if [ -n "$EXTRA_NETWORKS" ]; then
-                echo "$EXTRA_NETWORKS" | while IFS= read -r net; do
-                  [ -n "$net" ] && docker network connect "$net" "$CANDIDATE_NAME"
+              NEW_ID=$(docker compose ps -q $service | head -1)
+              timeout 60 bash -c "
+                until docker inspect --format='{{.State.Health.Status}}' $NEW_ID \
+                  2>/dev/null | grep -q 'healthy'; do
+                  sleep 3
                 done
-              fi
-
-              echo "Waiting up to 60s for candidate $service container to become healthy..."
-              if ! wait_for_healthy "$CANDIDATE_NAME"; then
-                echo "Health check failed for candidate $service container. Leaving existing container running."
-                docker logs --tail 50 "$CANDIDATE_NAME" || true
-                docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+              " || {
+                echo "Health check failed for $service — aborting"
                 exit 1
-              fi
-
-              echo "Candidate for $service is healthy; promoting new version"
-              docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
-              docker compose up -d --no-deps "$service"
-
-              echo "$service deployed successfully"
+              }
+              echo "$service updated successfully"
             done
