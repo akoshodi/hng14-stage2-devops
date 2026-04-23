@@ -86,3 +86,53 @@ All bugs found in the original source code and how they were resolved.
   security violation — credentials and config must never be in git history.
 - **Fix:** Removed `_env`, created `.env.example` with placeholder values,
   and added `.env` to `.gitignore`.
+
+### Fix 13 — `api/.env` with plaintext credentials committed and tracked
+- **File:** `api/.env`, line 1
+- **Problem:** A real `.env` file containing `REDIS_PASSWORD=supersecretpassword123`
+  and `APP_ENV=production` was tracked by git and present in commit history.
+  Any public viewer of the repository could read these credentials. This violates
+  the acceptance criteria which state `.env` must never appear in the repository
+  or git history.
+- **Fix:** Ran `git rm --cached api/.env` to untrack the file. Added `**/.env`
+  to `.gitignore` to block all nested env files. Rewrote full git history with
+  `git filter-repo --path api/.env --invert-paths` to permanently remove the
+  file from all past commits.
+
+### Fix 14 — Compose frontend service uses hardcoded container port
+- **File:** `docker-compose.yml`, lines 59 and 62
+- **Problem:** The `ports` mapping contained a hardcoded container-side port
+  (`"${PORT}:3000"`) and the `environment` block set `PORT: 3000` as a literal
+  value. This violates the rubric requirement that all configuration must come
+  from environment variables with nothing hardcoded in the Compose file.
+- **Fix:** Changed ports to `"${PORT}:${PORT}"` and environment to `PORT: ${PORT}`
+  so the value flows entirely from the `.env` file.
+
+### Fix 15 — Compose frontend service missing internal network
+- **File:** `docker-compose.yml`, line 63
+- **Problem:** The frontend service was only attached to the `public` network.
+  Since it must call the API (`api:8000`) over Docker networking, and the API
+  is on the `internal` network, all inter-service traffic must traverse the
+  internal network. Without this, the frontend-to-API path is inconsistent with
+  the rubric requirement that services communicate over a named internal network.
+- **Fix:** Added `internal` to the frontend service's `networks` list so it
+  shares the private bridge with the API, worker, and Redis, while still
+  exposing the host port via the `public` network.
+
+### Fix 16 — Worker healthcheck tests process existence, not service health
+- **File:** `worker/Dockerfile`, line 14
+- **Problem:** `HEALTHCHECK CMD python -c "import os, sys; sys.exit(0) if os.path.exists('/proc/1/status')..."` only
+  verifies that a process is alive on PID 1 — it does not prove the worker can
+  reach Redis, which is its only external dependency and the one failure mode
+  that matters. A worker that cannot connect to Redis will appear healthy.
+- **Fix:** Changed to `python -c "import os, redis; r=redis.Redis(host=os.getenv('REDIS_HOST','redis'),port=int(os.getenv('REDIS_PORT',6379))); r.ping()"`
+  so the healthcheck probes the actual Redis connection on every interval.
+
+### Fix 17 — `.env.example` contained real operational defaults instead of placeholders
+- **File:** `.env.example`
+- **Problem:** Variables such as `REDIS_HOST=redis`, `PORT=3000`, and
+  `API_URL=http://api:8000` are real working values, not placeholders. The
+  rubric explicitly requires placeholder values in `.env.example`.
+- **Fix:** Replaced all values with angle-bracket placeholder strings (e.g.
+  `REDIS_HOST=<redis_service_name>`, `PORT=<frontend_port>`) to make it clear
+  that the file must be filled in before use.

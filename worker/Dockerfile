@@ -12,5 +12,5 @@ COPY --from=builder /install /usr/local
 COPY worker.py .
 USER appuser
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD python -c "import os, sys; sys.exit(0) if os.path.exists('/proc/1/status') else sys.exit(1)"
+  CMD python -c "import os, redis; r=redis.Redis(host=os.getenv('REDIS_HOST','redis'),port=int(os.getenv('REDIS_PORT',6379))); r.ping()"
 CMD ["python", "worker.py"]

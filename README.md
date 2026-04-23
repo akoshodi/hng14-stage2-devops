@@ -90,7 +90,7 @@ Copy `.env.example` to `.env` and adjust if needed. Never commit `.env`.
 | `REDIS_HOST` | `redis` | Redis service hostname (Docker service name) |
 | `REDIS_PORT` | `6379` | Redis port |
 | `API_URL` | `http://api:8000` | URL the frontend uses to reach the API |
-| `PORT` | `3000` | Port the frontend binds to on the host |
+| `PORT` | `3000` | Port the frontend binds to on both the host and inside the container |
 
 ---
 
