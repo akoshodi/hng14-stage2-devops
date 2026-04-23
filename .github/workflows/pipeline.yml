@@ -38,7 +38,8 @@ jobs:
 
       - name: Run eslint on frontend
         working-directory: frontend
-        run: npx eslint app.js --env node --env es2021 --rule '{"no-unused-vars": "warn"}' || npx eslint app.js
+        run: |
+          npx eslint app.js --env node --env es2021 --rule '{"no-unused-vars":"warn"}' || npx eslint app.js
 
 
       - name: Lint api Dockerfile
