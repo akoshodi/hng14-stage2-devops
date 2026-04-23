@@ -3,3 +3,5 @@ uvicorn
 redis
 httpx
 wheel>=0.46.2
+pytest
+pytest-cov
