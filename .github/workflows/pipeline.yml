@@ -267,8 +267,23 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -eu
-            cd ~/hng14-stage2-devops
+            APP_DIR="$HOME/${{ github.event.repository.name }}"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              mkdir -p "$APP_DIR"
+              git clone "$REPO_URL" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+            git fetch origin main
+            git checkout main
             git pull --ff-only origin main
+
+            if [ ! -f .env ]; then
+              echo "Missing .env on deploy target at $APP_DIR/.env"
+              exit 1
+            fi
 
             wait_for_healthy() {
               container_id="$1"
