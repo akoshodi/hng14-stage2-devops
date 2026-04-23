@@ -204,7 +204,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Create .env
-        run: cp .env.example .env
+        run: |
+          cat > .env <<'EOF'
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          API_PORT=8000
+          PORT=3000
+          API_URL=http://api:8000
+          EOF
 
       - name: Start stack
         run: docker compose up -d --build
