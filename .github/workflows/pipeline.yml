@@ -257,34 +257,75 @@ jobs:
           username: hngdevops
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            set -e
+            set -eu
             cd ~/hng14-stage2-devops
-            git pull origin main
+            git pull --ff-only origin main
 
-            docker compose build
+            wait_for_healthy() {
+              container_id="$1"
+              timeout_seconds=60
+              deadline=$(($(date +%s) + timeout_seconds))
+
+              while [ "$(date +%s)" -lt "$deadline" ]; do
+                status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$container_id" 2>/dev/null || echo "missing")
+
+                if [ "$status" = "healthy" ]; then
+                  return 0
+                fi
+
+                if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ] || [ "$status" = "missing" ]; then
+                  return 1
+                fi
+
+                sleep 3
+              done
+
+              return 1
+            }
 
             for service in api worker frontend; do
               echo "==> Rolling update: $service"
 
-              OLD_ID=$(docker compose ps -q $service | head -1)
+              docker compose build "$service"
 
-              docker compose up -d --no-deps --build $service
+              OLD_ID=$(docker compose ps -q "$service" | head -n 1 || true)
+              if [ -z "$OLD_ID" ]; then
+                echo "No existing container found for $service; starting fresh"
+                docker compose up -d --no-deps "$service"
+                continue
+              fi
 
-              NEW_ID=$(docker compose ps -q $service | head -1)
+              CANDIDATE_NAME="${service}_candidate_$(date +%s)_$$"
 
-              echo "Waiting for $service health check..."
-              timeout 60 bash -c "
-                until docker inspect --format='{{.State.Health.Status}}' $NEW_ID \
-                  2>/dev/null | grep -q 'healthy'; do
-                  sleep 3
-                done
-              " || {
-                echo "Health check failed for $service — rolling back"
-                if [ -n \"$OLD_ID\" ]; then
-                  docker start $OLD_ID 2>/dev/null || true
-                fi
+              IMAGE_REF=$(docker inspect --format '{{.Config.Image}}' "$OLD_ID")
+              PRIMARY_NETWORK=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$OLD_ID" | head -n 1)
+
+              if [ -z "$PRIMARY_NETWORK" ]; then
+                echo "Unable to determine network for $service"
                 exit 1
-              }
+              fi
+
+              docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+              docker run -d --name "$CANDIDATE_NAME" --env-file .env --network "$PRIMARY_NETWORK" "$IMAGE_REF" >/dev/null
+
+              EXTRA_NETWORKS=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$OLD_ID" | tail -n +2)
+              if [ -n "$EXTRA_NETWORKS" ]; then
+                echo "$EXTRA_NETWORKS" | while IFS= read -r net; do
+                  [ -n "$net" ] && docker network connect "$net" "$CANDIDATE_NAME"
+                done
+              fi
+
+              echo "Waiting up to 60s for candidate $service container to become healthy..."
+              if ! wait_for_healthy "$CANDIDATE_NAME"; then
+                echo "Health check failed for candidate $service container. Leaving existing container running."
+                docker logs --tail 50 "$CANDIDATE_NAME" || true
+                docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+                exit 1
+              fi
+
+              echo "Candidate for $service is healthy; promoting new version"
+              docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+              docker compose up -d --no-deps "$service"
 
               echo "$service deployed successfully"
             done
