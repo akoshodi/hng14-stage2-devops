@@ -2,11 +2,17 @@
 FROM python:3.11-slim AS builder
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+RUN set -eux; \
+  ok=0; \
+  for i in 1 2 3 4 5; do \
+    if pip install --no-cache-dir --prefix=/install -r requirements.txt; then ok=1; break; fi; \
+    echo "pip install failed, retrying in 5s..."; \
+    sleep 5; \
+  done; \
+  [ "$ok" -eq 1 ]
 
 FROM python:3.11-slim AS runner
 WORKDIR /app
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 COPY --from=builder /install /usr/local
 COPY main.py .
